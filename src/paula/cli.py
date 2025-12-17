@@ -1,22 +1,24 @@
 """CLI interface for Paula voice-to-todo application."""
 
-import os
 import sys
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+from rich.text import Text
 
-from paula.audio.recorder import AudioRecorder
+from paula.audio.recorder import AudioRecorder, StreamingRecorder
 from paula.config import settings
+from paula.history import HistoryLogger
 from paula.intent.ollama_service import OllamaService
 from paula.todoist.client import TodoistClient
 from paula.transcription.whisper_service import WhisperService
 from paula.utils.exceptions import (
     AudioError,
-    ConfigurationError,
     IntentExtractionError,
     TodoistError,
     TranscriptionError,
@@ -204,6 +206,7 @@ def run():
             timeout=settings.ollama_timeout,
         )
         todoist = TodoistClient(settings.todoist_api_token)
+        history = HistoryLogger()
 
         # Quick validation
         if not ollama.is_available():
@@ -266,6 +269,8 @@ def run():
                     intent.title = title
                     intent.is_task = True
                 else:
+                    # Log as not-a-task
+                    history.log(transcription, intent, task_created=False, command="run")
                     continue
 
             # Show extracted intent with ALL fields
@@ -323,6 +328,9 @@ def run():
                 task = todoist.create_task(intent)
                 progress.update(task_id, description="[green]✓[/green] Task created!")
 
+            # Log to history
+            history.log(transcription, intent, task_created=True, task_id=task.id, command="run")
+
             # Show success
             console.print(
                 f"\n[bold green]✅ Task created:[/bold green] {task.content}"
@@ -348,6 +356,295 @@ def run():
         except Exception as e:
             console.print(f"\n[red]Unexpected error: {e}[/red]")
             logger.exception("Unexpected error in main loop")
+
+
+def _generate_stream_display(
+    status: str = "Listening...",
+    is_speaking: bool = False,
+    transcription: str = "",
+    task_created: str = "",
+    not_a_task: str = "",
+    tasks_created: int = 0,
+) -> Panel:
+    """Generate the live display panel for stream mode.
+
+    Args:
+        status: Current status message
+        is_speaking: Whether speech is being detected
+        transcription: Last transcription text
+        task_created: Task that was just created (if any)
+        not_a_task: Message for non-task detection
+        tasks_created: Total tasks created in session
+
+    Returns:
+        Rich Panel for display
+    """
+    table = Table.grid(padding=(0, 1))
+    table.add_column(justify="left")
+
+    # Status indicator
+    if is_speaking:
+        status_text = Text("● ", style="red") + Text("Speaking...", style="bold")
+    elif "Transcribing" in status:
+        status_text = Text("◐ ", style="yellow") + Text(status, style="bold yellow")
+    elif "Analyzing" in status:
+        status_text = Text("◑ ", style="cyan") + Text(status, style="bold cyan")
+    else:
+        status_text = Text("○ ", style="green") + Text(status, style="bold green")
+
+    table.add_row(status_text)
+    table.add_row(Text(""))
+
+    # Last transcription
+    if transcription:
+        table.add_row(Text("Last heard:", style="dim"))
+        table.add_row(Text(f'"{transcription}"', style="italic"))
+        table.add_row(Text(""))
+
+    # Task created notification
+    if task_created:
+        table.add_row(Text(f"✅ Task created: {task_created}", style="bold green"))
+        table.add_row(Text(""))
+
+    # Not a task notification
+    if not_a_task:
+        table.add_row(Text(f"💭 {not_a_task}", style="dim"))
+        table.add_row(Text(""))
+
+    # Session stats
+    if tasks_created > 0:
+        table.add_row(Text(f"Session: {tasks_created} task(s) created", style="dim"))
+
+    return Panel(
+        table,
+        title="[bold blue]Paula - Continuous Mode[/bold blue]",
+        subtitle="[dim]Press Ctrl+C to stop[/dim]",
+        border_style="blue",
+    )
+
+
+@cli.command()
+@click.option(
+    "--confidence",
+    "-c",
+    default=None,
+    type=float,
+    help="Min confidence for auto-create (0.0-1.0, default: 0.85)",
+)
+@click.option(
+    "--vad-level",
+    "-v",
+    default=None,
+    type=int,
+    help="VAD aggressiveness (0-3, default: 2)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be created without actually creating tasks",
+)
+def stream(confidence: float | None, vad_level: int | None, dry_run: bool):
+    """Continuous voice-to-todo mode with real-time transcription.
+
+    Listens continuously and automatically creates tasks when detected.
+    Press Ctrl+C to stop.
+    """
+    # Use settings defaults if not specified
+    confidence_threshold = confidence if confidence is not None else settings.auto_create_confidence
+    vad_aggressiveness = vad_level if vad_level is not None else settings.vad_aggressiveness
+
+    # Validate
+    if not 0.0 <= confidence_threshold <= 1.0:
+        console.print("[red]Error: confidence must be between 0.0 and 1.0[/red]")
+        sys.exit(1)
+    if vad_aggressiveness not in range(4):
+        console.print("[red]Error: vad-level must be 0, 1, 2, or 3[/red]")
+        sys.exit(1)
+
+    # Validate configuration
+    try:
+        settings.validate_required()
+    except ValueError as e:
+        console.print(f"[red]Configuration error: {e}[/red]")
+        console.print("\nRun [cyan]uv run paula setup[/cyan] to configure")
+        sys.exit(1)
+
+    # Initialize services
+    try:
+        recorder = StreamingRecorder(
+            sample_rate=settings.sample_rate,
+            vad_aggressiveness=vad_aggressiveness,
+            silence_threshold_ms=settings.silence_threshold_ms,
+            min_speech_ms=settings.min_speech_ms,
+        )
+        whisper = WhisperService(
+            model_name=settings.whisper_model,
+            device=settings.whisper_device,
+            language=settings.whisper_language,
+        )
+        ollama = OllamaService(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+            timeout=settings.ollama_timeout,
+        )
+        todoist = TodoistClient(settings.todoist_api_token)
+        history = HistoryLogger()
+
+        # Quick validation
+        if not ollama.is_available():
+            console.print("[red]Ollama is not running![/red]")
+            console.print("Start it with: [cyan]ollama serve[/cyan]")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]Initialization failed: {e}[/red]")
+        sys.exit(1)
+
+    # Show startup info
+    mode_info = "[yellow]DRY RUN[/yellow] - " if dry_run else ""
+    console.print(
+        f"\n{mode_info}Starting continuous mode "
+        f"(confidence threshold: {confidence_threshold:.0%}, VAD level: {vad_aggressiveness})\n"
+    )
+
+    # Session stats
+    tasks_created = 0
+    last_transcription = ""
+    last_task = ""
+    last_not_task = ""
+
+    with Live(
+        _generate_stream_display(),
+        refresh_per_second=4,
+        console=console,
+    ) as live:
+        try:
+            for speech_segment in recorder.start():
+                # Update display: transcribing
+                live.update(_generate_stream_display(
+                    status="Transcribing...",
+                    tasks_created=tasks_created,
+                ))
+
+                # Transcribe
+                try:
+                    text = whisper.transcribe_audio(speech_segment, settings.sample_rate)
+                except TranscriptionError as e:
+                    logger.warning(f"Transcription error: {e}")
+                    live.update(_generate_stream_display(
+                        status="Listening...",
+                        not_a_task="Could not transcribe audio",
+                        tasks_created=tasks_created,
+                    ))
+                    continue
+
+                if not text:
+                    live.update(_generate_stream_display(
+                        status="Listening...",
+                        tasks_created=tasks_created,
+                    ))
+                    continue
+
+                last_transcription = text
+
+                # Update display: analyzing
+                live.update(_generate_stream_display(
+                    status="Analyzing intent...",
+                    transcription=last_transcription,
+                    tasks_created=tasks_created,
+                ))
+
+                # Extract intent
+                try:
+                    intent = ollama.extract_todo(text)
+                except IntentExtractionError as e:
+                    logger.warning(f"Intent extraction error: {e}")
+                    live.update(_generate_stream_display(
+                        status="Listening...",
+                        transcription=last_transcription,
+                        not_a_task="Could not analyze intent",
+                        tasks_created=tasks_created,
+                    ))
+                    continue
+
+                # Check if it's a task with sufficient confidence
+                if intent.is_task and intent.confidence >= confidence_threshold:
+                    if dry_run:
+                        # Dry run - just show what would be created
+                        last_task = f"[DRY RUN] {intent.title}"
+                        last_not_task = ""
+                        live.update(_generate_stream_display(
+                            status="Listening...",
+                            transcription=last_transcription,
+                            task_created=last_task,
+                            tasks_created=tasks_created,
+                        ))
+                    else:
+                        # Create the task
+                        try:
+                            task = todoist.create_task(intent)
+                            tasks_created += 1
+                            last_task = task.content
+                            last_not_task = ""
+                            # Log successful task creation
+                            history.log(text, intent, task_created=True, task_id=task.id, command="stream")
+                            live.update(_generate_stream_display(
+                                status="Listening...",
+                                transcription=last_transcription,
+                                task_created=last_task,
+                                tasks_created=tasks_created,
+                            ))
+                        except TodoistError as e:
+                            logger.error(f"Failed to create task: {e}")
+                            # Log failed task creation
+                            history.log(text, intent, task_created=False, command="stream")
+                            live.update(_generate_stream_display(
+                                status="Listening...",
+                                transcription=last_transcription,
+                                not_a_task=f"Failed to create task: {e}",
+                                tasks_created=tasks_created,
+                            ))
+                else:
+                    # Not a task or low confidence
+                    if intent.is_task:
+                        last_not_task = f"Low confidence ({intent.confidence:.0%})"
+                    else:
+                        last_not_task = f"Not a task ({intent.confidence:.0%})"
+
+                    last_task = ""
+                    # Log as not-a-task
+                    history.log(text, intent, task_created=False, command="stream")
+                    live.update(_generate_stream_display(
+                        status="Listening...",
+                        transcription=last_transcription,
+                        not_a_task=last_not_task,
+                        tasks_created=tasks_created,
+                    ))
+
+        except KeyboardInterrupt:
+            pass
+        except AudioError as e:
+            console.print(f"\n[red]Audio error: {e}[/red]")
+        except Exception as e:
+            console.print(f"\n[red]Unexpected error: {e}[/red]")
+            logger.exception("Error in stream mode")
+        finally:
+            # Stop recorder and process any remaining audio
+            remaining = recorder.stop()
+            if remaining is not None and len(remaining) > 0:
+                try:
+                    text = whisper.transcribe_audio(remaining, settings.sample_rate)
+                    if text:
+                        console.print(f"\n[dim]Final segment: \"{text}\"[/dim]")
+                except Exception:
+                    pass
+
+    # Summary
+    console.print("\n[bold]Session complete![/bold]")
+    if tasks_created > 0:
+        console.print(f"[green]Created {tasks_created} task(s)[/green]")
+    else:
+        console.print("[dim]No tasks created[/dim]")
 
 
 if __name__ == "__main__":

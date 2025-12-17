@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     sample_rate: int = 16000
     max_recording_duration: int = 60
 
+    # Streaming mode (VAD settings)
+    vad_aggressiveness: int = 2  # 0-3, higher = more aggressive filtering
+    silence_threshold_ms: int = 800  # Silence duration to trigger speech end
+    min_speech_ms: int = 250  # Minimum speech duration to consider valid
+    auto_create_confidence: float = 0.85  # Min confidence for automatic task creation
+
     # Logging
     log_level: str = "INFO"
 

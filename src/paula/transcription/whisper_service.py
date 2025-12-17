@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from faster_whisper import WhisperModel
 
 from paula.utils.exceptions import TranscriptionError
@@ -97,6 +98,57 @@ class WhisperService:
 
         except TranscriptionError:
             raise
+        except Exception as e:
+            raise TranscriptionError(f"Transcription failed: {e}") from e
+
+    def transcribe_audio(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+        """Transcribe audio directly from numpy array.
+
+        Args:
+            audio: Audio data as float32 numpy array
+            sample_rate: Sample rate of the audio (default: 16000)
+
+        Returns:
+            Transcribed text
+
+        Raises:
+            TranscriptionError: If transcription fails
+        """
+        if audio is None or len(audio) == 0:
+            raise TranscriptionError("Empty audio provided")
+
+        # Load model if not already loaded
+        self._load_model()
+
+        try:
+            duration = len(audio) / sample_rate
+            logger.info(f"Transcribing audio segment: {duration:.2f}s")
+
+            # Ensure audio is float32 and mono
+            if audio.dtype != np.float32:
+                audio = audio.astype(np.float32)
+            if audio.ndim > 1:
+                audio = audio.flatten()
+
+            # Transcribe directly from numpy array
+            # faster-whisper accepts numpy arrays directly
+            segments, info = self._model.transcribe(
+                audio,
+                language=self.language,
+                beam_size=5,
+                vad_filter=True,
+            )
+
+            # Combine all segments into single text
+            transcription = " ".join([segment.text.strip() for segment in segments])
+
+            if not transcription:
+                logger.debug("No speech detected in audio segment")
+                return ""
+
+            logger.debug(f"Transcribed: {transcription}")
+            return transcription.strip()
+
         except Exception as e:
             raise TranscriptionError(f"Transcription failed: {e}") from e
 

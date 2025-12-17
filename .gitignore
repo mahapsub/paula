@@ -44,3 +44,6 @@ htmlcov/
 # Temporary files
 *.log
 .DS_Store
+
+# Paula history
+.paula/

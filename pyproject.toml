@@ -16,6 +16,7 @@ dependencies = [
     "click>=8.1.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.0.0",
+    "webrtcvad>=2.0.10",
 ]
 
 [project.optional-dependencies]
