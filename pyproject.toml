@@ -1,7 +1,36 @@
 [project]
 name = "paula"
 version = "0.1.0"
-description = "Add your description here"
+description = "Voice-to-todo application using local AI models (Whisper + Ollama) and Todoist"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "sounddevice>=0.4.6",
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "faster-whisper>=1.0.0",
+    "ollama>=0.3.0",
+    "todoist-api-python>=2.1.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.7.0",
+    "click>=8.1.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.12.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+paula = "paula.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paula"]
