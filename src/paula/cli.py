@@ -248,35 +248,91 @@ def run():
                 console.print(f'[italic]"{transcription}"[/italic]')
 
                 # Extract intent
-                progress.update(task_id, description="Extracting intent...")
+                progress.update(task_id, description="Analyzing intent...")
                 intent = ollama.extract_todo(transcription)
-                progress.update(task_id, description="[green]✓[/green] Intent extracted")
+                progress.update(task_id, description="[green]✓[/green] Analysis complete")
 
-                # Show extracted intent
-                console.print(f"\n[bold]Task:[/bold] {intent.title}")
-                if intent.description:
-                    console.print(f"[bold]Details:[/bold] {intent.description}")
-                console.print(f"[bold]Priority:[/bold] {intent.priority}")
-                if intent.due_date:
-                    console.print(f"[bold]Due:[/bold] {intent.due_date}")
-                if intent.project_name:
-                    console.print(f"[bold]Project:[/bold] {intent.project_name}")
+            # Check if this is actually a task
+            if not intent.is_task:
+                console.print(f"\n[yellow]ℹ️  Not a task detected[/yellow] (confidence: {intent.confidence:.0%})")
+                if intent.notes:
+                    console.print(f"[dim]{intent.notes}[/dim]")
+                console.print(f'\n[italic]You said: "{transcription}"[/italic]')
 
-                # Create task
-                progress.update(task_id, description="Creating Todoist task...")
+                # Option to create anyway
+                if click.confirm("\nDo you want to create a task anyway?", default=False):
+                    # Prompt for task title
+                    title = click.prompt("Enter task title", type=str)
+                    intent.title = title
+                    intent.is_task = True
+                else:
+                    continue
+
+            # Show extracted intent with ALL fields
+            console.print(f"\n[bold cyan]📋 Detected Task[/bold cyan] (confidence: {intent.confidence:.0%})")
+            console.print(f"[bold]Title:[/bold] {intent.title}")
+
+            if intent.description:
+                console.print(f"[bold]Description:[/bold] {intent.description}")
+
+            # Priority
+            priority_labels = {1: "🔴 Urgent", 2: "🟠 High", 3: "🟡 Medium", 4: "⚪ Normal"}
+            console.print(f"[bold]Priority:[/bold] {priority_labels.get(intent.priority, 'Normal')}")
+
+            # Time info
+            if intent.due_date:
+                due_display = intent.due_date
+                if intent.due_time:
+                    due_display += f" at {intent.due_time}"
+                console.print(f"[bold]Due:[/bold] 📅 {due_display}")
+
+            if intent.due_string:
+                console.print(f"[bold]Recurring:[/bold] 🔁 {intent.due_string}")
+
+            if intent.deadline_date:
+                console.print(f"[bold]Deadline:[/bold] ⚠️  {intent.deadline_date}")
+
+            # Duration
+            if intent.duration and intent.duration_unit:
+                console.print(f"[bold]Duration:[/bold] ⏱️  {intent.duration} {intent.duration_unit}(s)")
+
+            # Organization
+            if intent.project_name:
+                console.print(f"[bold]Project:[/bold] 📁 {intent.project_name}")
+
+            if intent.section_name:
+                console.print(f"[bold]Section:[/bold] 📂 {intent.section_name}")
+
+            if intent.labels:
+                console.print(f"[bold]Labels:[/bold] 🏷️  {', '.join(intent.labels)}")
+
+            # Hierarchy
+            if intent.parent_task_name:
+                console.print(f"[bold]Parent Task:[/bold] ⬆️  {intent.parent_task_name}")
+
+            if intent.is_subtask:
+                console.print("[bold]Type:[/bold] 📎 Subtask")
+
+            # Create task
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task_id = progress.add_task("Creating Todoist task...", total=None)
                 task = todoist.create_task(intent)
                 progress.update(task_id, description="[green]✓[/green] Task created!")
 
-                # Show success
-                console.print(
-                    f"\n[bold green]✅ Task created:[/bold green] {task.content}"
-                )
-                task_url = todoist.get_task_url(task)
-                console.print(f"[link]{task_url}[/link]")
+            # Show success
+            console.print(
+                f"\n[bold green]✅ Task created:[/bold green] {task.content}"
+            )
+            task_url = todoist.get_task_url(task)
+            console.print(f"[link]{task_url}[/link]")
 
-                # Clean up temp audio file
-                if audio_path.exists():
-                    audio_path.unlink()
+            # Clean up temp audio file
+            if audio_path.exists():
+                audio_path.unlink()
 
         except KeyboardInterrupt:
             console.print("\n\n[yellow]Goodbye![/yellow]")

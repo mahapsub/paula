@@ -38,6 +38,7 @@ class TodoistClient:
         try:
             self._api = TodoistAPI(api_token)
             self._projects_cache: Optional[dict[str, str]] = None
+            self._sections_cache: dict[str, dict[str, str]] = {}  # project_id -> {section_name -> section_id}
         except Exception as e:
             raise TodoistError(f"Failed to initialize Todoist client: {e}") from e
 
@@ -85,6 +86,63 @@ class TodoistClient:
         self._load_projects_cache()
         return self._projects_cache.get(project_name.lower())
 
+    def _load_sections_cache(self, project_id: str) -> None:
+        """Load sections for a project into cache.
+
+        Args:
+            project_id: Project ID to load sections for
+        """
+        if project_id in self._sections_cache:
+            return
+
+        try:
+            sections = self._api.get_sections(project_id=project_id)
+            self._sections_cache[project_id] = {
+                section.name.lower(): section.id for section in sections
+            }
+            logger.debug(f"Loaded {len(self._sections_cache[project_id])} sections for project {project_id}")
+        except Exception as e:
+            logger.warning(f"Failed to load sections for project {project_id}: {e}")
+            self._sections_cache[project_id] = {}
+
+    def get_section_id(self, project_id: str, section_name: str) -> Optional[str]:
+        """Get section ID by name within a project.
+
+        Args:
+            project_id: Project ID
+            section_name: Section name to lookup
+
+        Returns:
+            Section ID if found, None otherwise
+        """
+        self._load_sections_cache(project_id)
+        return self._sections_cache.get(project_id, {}).get(section_name.lower())
+
+    def find_task_by_name(self, name: str, project_id: Optional[str] = None) -> Optional[str]:
+        """Find a task ID by searching for its name.
+
+        Args:
+            name: Task name to search for
+            project_id: Optional project ID to narrow search
+
+        Returns:
+            Task ID if found, None otherwise
+        """
+        try:
+            tasks = self._api.get_tasks(project_id=project_id) if project_id else self._api.get_tasks()
+            name_lower = name.lower()
+
+            for task in tasks:
+                if task.content.lower() == name_lower or name_lower in task.content.lower():
+                    logger.debug(f"Found matching task: {task.content} (ID: {task.id})")
+                    return task.id
+
+            logger.debug(f"No task found matching '{name}'")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to search for task '{name}': {e}")
+            return None
+
     def create_task(self, todo: TodoIntent) -> Task:
         """Create a task in Todoist from TodoIntent.
 
@@ -113,20 +171,58 @@ class TodoistClient:
                         "task will be created in Inbox"
                     )
 
-            # Build task content
-            content = todo.title
-            if todo.description:
-                # Todoist doesn't have separate description field in simple task creation
-                # We'll add it to the content in parentheses
-                content = f"{todo.title} ({todo.description})"
+            # Get section ID if section name specified (requires project)
+            section_id = None
+            if todo.section_name and project_id:
+                section_id = self.get_section_id(project_id, todo.section_name)
+                if not section_id:
+                    logger.warning(
+                        f"Section '{todo.section_name}' not found in project, "
+                        "task will be created without section"
+                    )
 
-            # Create the task
+            # Get parent task ID if parent task name specified
+            parent_id = None
+            if todo.parent_task_name:
+                parent_id = self.find_task_by_name(todo.parent_task_name, project_id)
+                if not parent_id:
+                    logger.warning(
+                        f"Parent task '{todo.parent_task_name}' not found, "
+                        "task will be created as a top-level task"
+                    )
+
+            # Build due parameter
+            due_param = None
+            if todo.due_string:
+                # Use natural language for recurring tasks
+                due_param = todo.due_string
+            elif todo.due_date and todo.due_time:
+                # Combine date and time
+                due_param = f"{todo.due_date}T{todo.due_time}"
+            elif todo.due_date:
+                # Just date
+                due_param = todo.due_date
+
+            # Build duration parameter
+            duration_value = None
+            duration_unit_value = None
+            if todo.duration and todo.duration_unit:
+                duration_value = todo.duration
+                duration_unit_value = todo.duration_unit
+
+            # Create the task with all available parameters
             task = self._api.add_task(
-                content=content,
+                content=todo.title,
+                description=todo.description,  # Now using description parameter
                 project_id=project_id,
+                section_id=section_id,
+                parent_id=parent_id,
                 priority=todoist_priority,
-                due_string=todo.due_date if todo.due_date else None,
+                due_string=due_param,
+                due_date=todo.deadline_date if todo.deadline_date else None,  # Use deadline_date if specified
                 labels=todo.labels,
+                duration=duration_value,
+                duration_unit=duration_unit_value,
             )
 
             logger.info(f"Task created successfully: {task.id}")

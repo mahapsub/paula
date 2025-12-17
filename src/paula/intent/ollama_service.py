@@ -17,37 +17,99 @@ logger = get_logger(__name__)
 class TodoIntent(BaseModel):
     """Structured todo intent extracted from transcription."""
 
-    title: str = Field(..., min_length=1, description="Task title")
+    # Task Detection
+    is_task: bool = Field(..., description="Does this contain an actionable task?")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score 0-1")
+
+    # Basic Info (title now optional since might not be a task)
+    title: Optional[str] = Field(None, min_length=1, description="Task title")
     description: Optional[str] = Field(None, description="Task description")
+
+    # Priority & Organization
     priority: int = Field(4, ge=1, le=4, description="Priority (1=urgent, 4=normal)")
-    due_date: Optional[str] = Field(None, description="Due date in YYYY-MM-DD format")
     project_name: Optional[str] = Field(None, description="Project name")
+    section_name: Optional[str] = Field(None, description="Section within project")
     labels: list[str] = Field(default_factory=list, description="Task labels")
 
-    @field_validator("due_date")
+    # Time Management (enhanced)
+    due_date: Optional[str] = Field(None, description="Due date in YYYY-MM-DD format")
+    due_time: Optional[str] = Field(None, description="Due time in HH:MM format")
+    due_string: Optional[str] = Field(None, description="Natural language for recurring tasks")
+    deadline_date: Optional[str] = Field(None, description="Hard deadline date YYYY-MM-DD")
+
+    # Duration & Effort
+    duration: Optional[int] = Field(None, ge=1, description="Time estimate in specified unit")
+    duration_unit: Optional[str] = Field(None, description="Unit: minute, hour, or day")
+
+    # Hierarchy
+    parent_task_name: Optional[str] = Field(None, description="Name of parent task")
+    is_subtask: bool = Field(False, description="Is this a subtask?")
+
+    # Metadata
+    notes: Optional[str] = Field(None, description="Additional context or user thoughts")
+
+    @field_validator("due_date", "deadline_date")
     @classmethod
-    def validate_due_date(cls, v: Optional[str]) -> Optional[str]:
-        """Validate due date format.
+    def validate_date(cls, v: Optional[str]) -> Optional[str]:
+        """Validate date format.
 
         Args:
-            v: Due date string
+            v: Date string
 
         Returns:
-            Validated due date or None
-
-        Raises:
-            ValueError: If date format is invalid
+            Validated date or None
         """
         if v is None or v == "null":
             return None
 
         try:
-            # Try to parse the date to validate format
             datetime.strptime(v, "%Y-%m-%d")
             return v
         except ValueError as e:
-            logger.warning(f"Invalid due date format '{v}', ignoring: {e}")
+            logger.warning(f"Invalid date format '{v}', ignoring: {e}")
             return None
+
+    @field_validator("due_time")
+    @classmethod
+    def validate_time(cls, v: Optional[str]) -> Optional[str]:
+        """Validate time format.
+
+        Args:
+            v: Time string
+
+        Returns:
+            Validated time or None
+        """
+        if v is None or v == "null":
+            return None
+
+        try:
+            datetime.strptime(v, "%H:%M")
+            return v
+        except ValueError as e:
+            logger.warning(f"Invalid time format '{v}', ignoring: {e}")
+            return None
+
+    @field_validator("duration_unit")
+    @classmethod
+    def validate_duration_unit(cls, v: Optional[str]) -> Optional[str]:
+        """Validate duration unit.
+
+        Args:
+            v: Duration unit string
+
+        Returns:
+            Validated unit or None
+        """
+        if v is None or v == "null":
+            return None
+
+        valid_units = {"minute", "hour", "day"}
+        if v.lower() not in valid_units:
+            logger.warning(f"Invalid duration_unit '{v}', must be minute/hour/day")
+            return None
+
+        return v.lower()
 
 
 class OllamaService:
@@ -154,7 +216,10 @@ class OllamaService:
             # Create TodoIntent from parsed data
             try:
                 todo_intent = TodoIntent(**intent_data)
-                logger.info(f"Extracted intent: {todo_intent.title}")
+                if todo_intent.is_task:
+                    logger.info(f"Extracted task: {todo_intent.title} (confidence: {todo_intent.confidence:.2f})")
+                else:
+                    logger.info(f"Not a task (confidence: {todo_intent.confidence:.2f})")
                 logger.debug(f"Full intent: {todo_intent}")
                 return todo_intent
 
