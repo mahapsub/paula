@@ -18,6 +18,7 @@ Everything runs locally on your machine except the final Todoist API call, keepi
 - Local speech transcription with Whisper
 - Intelligent task detection with confidence scoring
 - Comprehensive intent extraction (title, description, priority, due date/time, project, section, labels, duration, recurring patterns)
+- **Smart scheduling**: Handles recurring tasks ("every Monday"), specific dates and times ("Tuesday at 3pm"), and date-only tasks ("by Friday")
 - Automatic task creation when confidence exceeds threshold
 - History logging of all transcriptions and intents
 - Beautiful terminal UI with live updates
@@ -168,11 +169,10 @@ sequenceDiagram
 - section_name: str      # Section within project
 - labels: list[str]      # Task labels
 - due_date: str          # YYYY-MM-DD format
-- due_time: str          # HH:MM format
-- due_string: str        # Natural language ("every Monday")
-- deadline_date: str     # Hard deadline
+- due_time: str          # HH:MM format (combined with due_date for specific times)
+- due_string: str        # Natural language ("every Monday", "tomorrow")
 - duration: int          # Time estimate
-- duration_unit: str     # minute/hour/day
+- duration_unit: str     # minute/hour/day (hour converted to minutes)
 - parent_task_name: str  # For subtasks
 - is_subtask: bool       # Subtask flag
 - notes: str             # Additional context
@@ -272,6 +272,46 @@ Checks:
 - Ollama server status
 - Ollama model availability
 - Todoist API connection
+
+---
+
+## Scheduling Examples
+
+Paula intelligently handles different types of scheduling:
+
+### Recurring Tasks
+Use natural language for repeating patterns:
+```
+"remind me to take vitamins every morning"
+"water the plants every Monday"
+"weekly team meeting on Fridays"
+```
+
+### Specific Date and Time
+Mention the day and time for precise scheduling:
+```
+"dentist appointment Tuesday at 3pm"
+"call mom tomorrow at 5:30pm"
+"meeting on December 31st at 9am"
+```
+
+### Date Only
+For tasks without specific times:
+```
+"finish report by Friday"
+"submit invoice by next Monday"
+"birthday party on Saturday"
+```
+
+### Duration Estimates
+Specify how long tasks will take:
+```
+"meeting for 2 hours"
+"workout for 30 minutes"
+"review document for 45 minutes"
+```
+
+**Note**: Paula automatically handles timezone conversion using your system timezone when creating tasks with specific times.
 
 ---
 
