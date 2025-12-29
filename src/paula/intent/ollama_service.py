@@ -35,11 +35,10 @@ class TodoIntent(BaseModel):
     due_date: Optional[str] = Field(None, description="Due date in YYYY-MM-DD format")
     due_time: Optional[str] = Field(None, description="Due time in HH:MM format")
     due_string: Optional[str] = Field(None, description="Natural language for recurring tasks")
-    deadline_date: Optional[str] = Field(None, description="Hard deadline date YYYY-MM-DD")
 
     # Duration & Effort
     duration: Optional[int] = Field(None, ge=1, description="Time estimate in specified unit")
-    duration_unit: Optional[str] = Field(None, description="Unit: minute, hour, or day")
+    duration_unit: Optional[str] = Field(None, description="Unit: minute or day (hour will be converted to minute)")
 
     # Hierarchy
     parent_task_name: Optional[str] = Field(None, description="Name of parent task")
@@ -48,7 +47,7 @@ class TodoIntent(BaseModel):
     # Metadata
     notes: Optional[str] = Field(None, description="Additional context or user thoughts")
 
-    @field_validator("due_date", "deadline_date")
+    @field_validator("due_date")
     @classmethod
     def validate_date(cls, v: Optional[str]) -> Optional[str]:
         """Validate date format.
@@ -109,6 +108,7 @@ class TodoIntent(BaseModel):
             logger.warning(f"Invalid duration_unit '{v}', must be minute/hour/day")
             return None
 
+        # Note: "hour" is accepted here but will be converted to "minute" in TodoistClient
         return v.lower()
 
 

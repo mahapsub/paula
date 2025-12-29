@@ -1,5 +1,6 @@
 """Todoist API client for Paula."""
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from todoist_api_python.api import TodoistAPI
@@ -118,6 +119,60 @@ class TodoistClient:
         self._load_sections_cache(project_id)
         return self._sections_cache.get(project_id, {}).get(section_name.lower())
 
+    def _build_due_params(self, todo: TodoIntent) -> dict:
+        """Build due date parameters for Todoist API.
+
+        Priority:
+        1. If due_string (recurring) → use due_string (let Todoist parse)
+        2. If due_date + due_time → use due_datetime (RFC3339 UTC)
+        3. If due_date only → use due_date (YYYY-MM-DD)
+        4. Else → no due date
+
+        Args:
+            todo: TodoIntent with date/time information
+
+        Returns:
+            Dictionary with appropriate due_* parameter
+        """
+        if todo.due_string:
+            # Recurring tasks - trust Todoist's natural language parser
+            logger.debug(f"Using due_string for recurring task: {todo.due_string}")
+            return {"due_string": todo.due_string}
+
+        elif todo.due_date and todo.due_time:
+            # Combine date and time, convert to UTC RFC3339 format
+            try:
+                # Parse the date and time
+                dt_str = f"{todo.due_date} {todo.due_time}"
+                dt_local = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+
+                # Assume local timezone (system timezone)
+                # In future: could get user's timezone from Todoist API or config
+                dt_local = dt_local.replace(tzinfo=datetime.now().astimezone().tzinfo)
+
+                # Convert to UTC
+                dt_utc = dt_local.astimezone(timezone.utc)
+
+                # Format as RFC3339
+                due_datetime = dt_utc.isoformat()
+                logger.debug(f"Using due_datetime: {due_datetime} (from {dt_str})")
+                return {"due_datetime": due_datetime}
+
+            except ValueError as e:
+                logger.warning(f"Failed to parse date/time '{todo.due_date} {todo.due_time}': {e}")
+                # Fallback to date only
+                if todo.due_date:
+                    logger.debug(f"Falling back to due_date: {todo.due_date}")
+                    return {"due_date": todo.due_date}
+                return {}
+
+        elif todo.due_date:
+            # Date only - no time component
+            logger.debug(f"Using due_date: {todo.due_date}")
+            return {"due_date": todo.due_date}
+
+        return {}
+
     def find_task_by_name(self, name: str, project_id: Optional[str] = None) -> Optional[str]:
         """Find a task ID by searching for its name.
 
@@ -191,38 +246,34 @@ class TodoistClient:
                         "task will be created as a top-level task"
                     )
 
-            # Build due parameter
-            due_param = None
-            if todo.due_string:
-                # Use natural language for recurring tasks
-                due_param = todo.due_string
-            elif todo.due_date and todo.due_time:
-                # Combine date and time
-                due_param = f"{todo.due_date}T{todo.due_time}"
-            elif todo.due_date:
-                # Just date
-                due_param = todo.due_date
+            # Build due date parameters
+            due_params = self._build_due_params(todo)
 
-            # Build duration parameter
+            # Build duration parameters with hour → minute conversion
             duration_value = None
             duration_unit_value = None
             if todo.duration and todo.duration_unit:
-                duration_value = todo.duration
-                duration_unit_value = todo.duration_unit
+                if todo.duration_unit == "hour":
+                    # Convert hours to minutes (API only supports minute and day)
+                    duration_value = todo.duration * 60
+                    duration_unit_value = "minute"
+                    logger.debug(f"Converted {todo.duration} hour(s) to {duration_value} minutes")
+                else:
+                    duration_value = todo.duration
+                    duration_unit_value = todo.duration_unit
 
             # Create the task with all available parameters
             task = self._api.add_task(
                 content=todo.title,
-                description=todo.description,  # Now using description parameter
+                description=todo.description,
                 project_id=project_id,
                 section_id=section_id,
                 parent_id=parent_id,
                 priority=todoist_priority,
-                due_string=due_param,
-                due_date=todo.deadline_date if todo.deadline_date else None,  # Use deadline_date if specified
                 labels=todo.labels,
                 duration=duration_value,
                 duration_unit=duration_unit_value,
+                **due_params,  # Unpack due_string, due_date, or due_datetime
             )
 
             logger.info(f"Task created successfully: {task.id}")

@@ -294,9 +294,6 @@ def run():
             if intent.due_string:
                 console.print(f"[bold]Recurring:[/bold] 🔁 {intent.due_string}")
 
-            if intent.deadline_date:
-                console.print(f"[bold]Deadline:[/bold] ⚠️  {intent.deadline_date}")
-
             # Duration
             if intent.duration and intent.duration_unit:
                 console.print(f"[bold]Duration:[/bold] ⏱️  {intent.duration} {intent.duration_unit}(s)")
